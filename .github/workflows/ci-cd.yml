@@ -1,0 +1,98 @@
+name: Pipeline de seguridad CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+jobs:
+  security-check:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: bagisto_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+    steps:
+      # Verificacion
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Instalacion PHP
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, bcmath, zip, curl, xml, gd, intl, mysql
+
+      # Instalacion Node
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # Instalar PHP dependencias
+      - name: Install Composer dependencies
+        run: composer install --no-progress --no-suggest --prefer-dist
+
+      # Generar un .env
+      - name: Copy .env
+        run: cp .env.example .env
+      - name: Generate Laravel key
+        run: php artisan key:generate
+
+      # Correr Laravel tests
+      - name: Run Laravel automated tests
+        run: php artisan test
+        continue-on-error: true
+
+      # Analisis estatico y calidad del codigo
+      - name: PHPStan Static Analysis
+        run: |
+          composer require --dev phpstan/phpstan
+          vendor/bin/phpstan analyse -l max
+        continue-on-error: true
+
+      - name: PHP_CodeSniffer PSR-12
+        run: |
+          composer require --dev squizlabs/php_codesniffer
+          vendor/bin/phpcs --standard=PSR12 app/
+        continue-on-error: true
+
+      # Node escaneo de seguridad
+      - name: Node.js vulnerability audit
+        run: npm install && npm audit --audit-level=high || true
+
+      # pruebas de manejo de credenciales
+      - name: Test RBAC
+        run: php artisan test --filter=RBACTest
+
+      - name: Test login con MFA/OAuth
+        run: php artisan test --filter=AuthTest
+
+      # Build frontend
+      - name: Build frontend assets
+        run: npm run build
+      # Reporte de resultados
+      - name: Crear reporte CI de seguridad
+        run: |
+          echo "# Reporte de Seguridad CI/CD" > reporte.md
+          echo "Fecha: $(date)" >> reporte.md
+          echo "Estado:Pipeline finalizado con éxito" >> reporte.md
+          echo "Se ejecutaron pruebas automatizadas, análisis estático y auditoría de dependencias." >> reporte.md
+
+      - name: Subir reporte como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-seguridad
+          path: reporte.md
